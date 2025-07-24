@@ -1,4 +1,4 @@
-module github.com/your-username/xk6-queue
+module github.com/abhic43/xk6-queue
 
 go 1.20
 

@@ -4,7 +4,7 @@ import (
 	"github.com/grafana/k6/js/modules"
 	"github.com/grafana/k6/lib/types"
 	"github.com/grafana/k6/options"
-	"github.com/your-username/xk6-queue/queue"
+	"github.com/abhic43/xk6-queue/queue"
 )
 
 var globalQueueManager = queue.NewGlobalQueueManager()
