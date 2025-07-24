@@ -27,7 +27,6 @@ func NewQueue() *Queue {
 func (q *Queue) Push(item string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-
 	q.items.PushBack(&Item{Value: item})
 	q.cond.Signal()
 }
@@ -54,26 +53,19 @@ func (q *Queue) BPop(timeoutMs int64) string {
 		return element.Value.(*Item).Value
 	}
 
-	if timeoutMs <= 0 {
-		return ""
-	}
+	timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
+	defer timer.Stop()
 
-	done := make(chan struct{})
+	waitCh := make(chan struct{})
 	go func() {
-		q.cond.L.Lock()
-		defer q.cond.L.Unlock()
-
-		select {
-		case <-time.After(time.Duration(timeoutMs) * time.Millisecond):
-			close(done)
-			return
-		default:
-			q.cond.Wait()
-			close(done)
-		}
+		q.cond.Wait()
+		close(waitCh)
 	}()
 
-	<-done
+	select {
+	case <-waitCh:
+	case <-timer.C:
+	}
 
 	if q.items.Len() > 0 {
 		element := q.items.Front()
@@ -109,9 +101,8 @@ func NewGlobalQueueManager() *GlobalQueueManager {
 func (gqm *GlobalQueueManager) getOrCreateQueue(name string) *Queue {
 	gqm.mu.Lock()
 	defer gqm.mu.Unlock()
-
-	q, exists := gqm.queues[name]
-	if !exists {
+	q, ok := gqm.queues[name]
+	if !ok {
 		q = NewQueue()
 		gqm.queues[name] = q
 	}
@@ -119,26 +110,21 @@ func (gqm *GlobalQueueManager) getOrCreateQueue(name string) *Queue {
 }
 
 func (gqm *GlobalQueueManager) Push(name string, item string) {
-	q := gqm.getOrCreateQueue(name)
-	q.Push(item)
+	gqm.getOrCreateQueue(name).Push(item)
 }
 
 func (gqm *GlobalQueueManager) Pop(name string) string {
-	q := gqm.getOrCreateQueue(name)
-	return q.Pop()
+	return gqm.getOrCreateQueue(name).Pop()
 }
 
 func (gqm *GlobalQueueManager) BPop(name string, timeoutMs int64) string {
-	q := gqm.getOrCreateQueue(name)
-	return q.BPop(timeoutMs)
+	return gqm.getOrCreateQueue(name).BPop(timeoutMs)
 }
 
 func (gqm *GlobalQueueManager) Length(name string) int {
-	q := gqm.getOrCreateQueue(name)
-	return q.Length()
+	return gqm.getOrCreateQueue(name).Length()
 }
 
 func (gqm *GlobalQueueManager) Clear(name string) {
-	q := gqm.getOrCreateQueue(name)
-	q.Clear()
+	gqm.getOrCreateQueue(name).Clear()
 }

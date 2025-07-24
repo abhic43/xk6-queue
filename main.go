@@ -1,10 +1,10 @@
 package main
 
 import (
+	"github.com/abhic43/xk6-queue/queue"
 	"go.k6.io/k6/js/modules"
 	"go.k6.io/k6/lib/types"
-	"github.com/abhic43/xk6-queue/queue"
-
+	"go.k6.io/k6/lib"
 )
 
 var globalQueueManager = queue.NewGlobalQueueManager()
@@ -15,12 +15,12 @@ func init() {
 
 type RootModule struct{}
 
-func (*RootModule) NewModuleInstance(vu types.VU, o *options.Options) (modules.Module, error) {
+func (*RootModule) NewModuleInstance(vu lib.VU, _ *lib.Options) (modules.Module, error) {
 	return &Module{vu: vu, manager: globalQueueManager}, nil
 }
 
 type Module struct {
-	vu      types.VU
+	vu      lib.VU
 	manager *queue.GlobalQueueManager
 }
 
@@ -30,7 +30,7 @@ func (m *Module) Exports() modules.Exports {
 	}
 }
 
-func (m *Module) Push(name string, item string) {
+func (m *Module) Push(name, item string) {
 	m.manager.Push(name, item)
 }
 
