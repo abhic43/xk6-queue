@@ -1,5 +1,3 @@
-package queue
-
 import (
 	"context"
 	"sync"
