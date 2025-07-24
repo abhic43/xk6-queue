@@ -1,10 +1,10 @@
 package main
 
 import (
-	"github.com/grafana/k6/js/modules"
-	"github.com/grafana/k6/lib/types"
-	"github.com/grafana/k6/options"
-	"github.com/abhic43/xk6-queue/queue"
+	"go.k6.io/k6/js/modules"
+	"go.k6.io/k6/lib/types"
+	 "github.com/abhic43/xk6-queue"
+
 )
 
 var globalQueueManager = queue.NewGlobalQueueManager()
