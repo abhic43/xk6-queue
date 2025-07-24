@@ -3,7 +3,7 @@ package main
 import (
 	"go.k6.io/k6/js/modules"
 	"go.k6.io/k6/lib/types"
-	 "github.com/abhic43/xk6-queue"
+	"github.com/abhic43/xk6-queue/queue"
 
 )
 
