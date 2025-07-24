@@ -2,65 +2,192 @@ package queue
 
 import (
 	"context"
-	"fmt"
-	"sync" // For thread-safe queue operations
+	"sync"
+	"time"
 
-	"go.k6.io/k6/js/modules" // Import k6's JavaScript modules package
+	"go.k6.io/k6/js/modules"
 )
 
-// Register the extension as a k6 module
 func init() {
 	modules.Register("k6/x/queue", new(Queue))
 }
 
-// Queue is the k6 extension struct.
-// It will hold the state for our in-memory queue.
-type Queue struct {
-	// The actual queue data structure (a slice of interfaces to hold any type)
-	data []interface{}
-	mu   sync.Mutex // Mutex for thread-safe access to the queue data
+// Queue represents the xk6 queue extension
+type Queue struct{}
+
+// QueueManager holds multiple named queues with thread-safe operations
+type QueueManager struct {
+	queues map[string]*SafeQueue
+	mutex  sync.RWMutex
 }
 
-// Enqueue adds an item to the queue.
-// This function will be callable from k6 scripts as `queue.enqueue(item)`.
-func (q *Queue) Enqueue(ctx context.Context, item interface{}) error {
-	q.mu.Lock()         // Acquire lock before modifying the queue
-	defer q.mu.Unlock() // Release lock when function exits
-
-	q.data = append(q.data, item)
-	fmt.Printf("Enqueued: %v (Queue size: %d)\n", item, len(q.data)) // Log for debugging
-	return nil // Return nil for no error
+// SafeQueue is a thread-safe queue implementation
+type SafeQueue struct {
+	items []interface{}
+	mutex sync.RWMutex
+	cond  *sync.Cond
 }
 
-// Dequeue removes and returns an item from the front of the queue.
-// This function will be callable from k6 scripts as `queue.dequeue()`.
-func (q *Queue) Dequeue(ctx context.Context) (interface{}, error) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+// Global queue manager instance
+var globalQueueManager = &QueueManager{
+	queues: make(map[string]*SafeQueue),
+}
 
-	if len(q.data) == 0 {
-		return nil, fmt.Errorf("queue is empty") // Return error if queue is empty
+// NewModuleInstance creates a new instance of the Queue module
+func (q *Queue) NewModuleInstance(vu modules.VU) modules.Instance {
+	return &QueueInstance{
+		vu: vu,
+	}
+}
+
+// QueueInstance represents an instance of the queue module for a VU
+type QueueInstance struct {
+	vu modules.VU
+}
+
+// Exports returns the exports of the module
+func (qi *QueueInstance) Exports() modules.Exports {
+	return modules.Exports{
+		Named: map[string]interface{}{
+			"push":         qi.push,
+			"pop":          qi.pop,
+			"popWithTimeout": qi.popWithTimeout,
+			"peek":         qi.peek,
+			"size":         qi.size,
+			"isEmpty":      qi.isEmpty,
+			"clear":        qi.clear,
+			"listQueues":   qi.listQueues,
+		},
+	}
+}
+
+// getOrCreateQueue gets an existing queue or creates a new one
+func (qm *QueueManager) getOrCreateQueue(name string) *SafeQueue {
+	qm.mutex.Lock()
+	defer qm.mutex.Unlock()
+
+	if queue, exists := qm.queues[name]; exists {
+		return queue
 	}
 
-	item := q.data[0]       // Get the first item
-	q.data = q.data[1:]     // Remove the first item by slicing
-	fmt.Printf("Dequeued: %v (Queue size: %d)\n", item, len(q.data)) // Log for debugging
-	return item, nil // Return the item and no error
+	queue := &SafeQueue{
+		items: make([]interface{}, 0),
+	}
+	queue.cond = sync.NewCond(&queue.mutex)
+	qm.queues[name] = queue
+	return queue
 }
 
-// Size returns the current number of items in the queue.
-// Callable as `queue.size()`.
-func (q *Queue) Size(ctx context.Context) int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return len(q.data)
+// Push adds an item to the specified queue
+func (qi *QueueInstance) push(queueName string, item interface{}) {
+	queue := globalQueueManager.getOrCreateQueue(queueName)
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+
+	queue.items = append(queue.items, item)
+	queue.cond.Signal() // Wake up any waiting pop operations
 }
 
-// Clear removes all items from the queue.
-// Callable as `queue.clear()`.
-func (q *Queue) Clear(ctx context.Context) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	q.data = []interface{}{} // Reset the slice to an empty one
-	fmt.Println("Queue cleared.")
+// Pop removes and returns the first item from the queue
+// Returns null if queue is empty
+func (qi *QueueInstance) pop(queueName string) interface{} {
+	queue := globalQueueManager.getOrCreateQueue(queueName)
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+
+	if len(queue.items) == 0 {
+		return nil
+	}
+
+	item := queue.items[0]
+	queue.items = queue.items[1:]
+	return item
+}
+
+// PopWithTimeout removes and returns the first item from the queue
+// Waits up to the specified timeout (in milliseconds) for an item to become available
+func (qi *QueueInstance) popWithTimeout(queueName string, timeoutMs int) interface{} {
+	queue := globalQueueManager.getOrCreateQueue(queueName)
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+
+	// If queue has items, return immediately
+	if len(queue.items) > 0 {
+		item := queue.items[0]
+		queue.items = queue.items[1:]
+		return item
+	}
+
+	// Wait for an item with timeout
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	done := make(chan bool, 1)
+	go func() {
+		queue.cond.Wait()
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		// Item available, check again
+		if len(queue.items) > 0 {
+			item := queue.items[0]
+			queue.items = queue.items[1:]
+			return item
+		}
+		return nil
+	case <-timer.C:
+		// Timeout reached
+		return nil
+	}
+}
+
+// Peek returns the first item without removing it
+func (qi *QueueInstance) peek(queueName string) interface{} {
+	queue := globalQueueManager.getOrCreateQueue(queueName)
+	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
+
+	if len(queue.items) == 0 {
+		return nil
+	}
+
+	return queue.items[0]
+}
+
+// Size returns the number of items in the queue
+func (qi *QueueInstance) size(queueName string) int {
+	queue := globalQueueManager.getOrCreateQueue(queueName)
+	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
+
+	return len(queue.items)
+}
+
+// IsEmpty returns true if the queue is empty
+func (qi *QueueInstance) isEmpty(queueName string) bool {
+	return qi.size(queueName) == 0
+}
+
+// Clear removes all items from the queue
+func (qi *QueueInstance) clear(queueName string) {
+	queue := globalQueueManager.getOrCreateQueue(queueName)
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+
+	queue.items = queue.items[:0] // Clear slice but keep capacity
+}
+
+// ListQueues returns the names of all created queues
+func (qi *QueueInstance) listQueues() []string {
+	globalQueueManager.mutex.RLock()
+	defer globalQueueManager.mutex.RUnlock()
+
+	names := make([]string, 0, len(globalQueueManager.queues))
+	for name := range globalQueueManager.queues {
+		names = append(names, name)
+	}
+	return names
 }
