@@ -107,8 +107,9 @@ func (qi *QueueInstance) pop(queueName string) interface{} {
 // Waits up to the specified timeout (in milliseconds) for an item to become available
 func (qi *QueueInstance) popWithTimeout(queueName string, timeoutMs int) interface{} {
 	queue := globalQueueManager.getOrCreateQueue(queueName)
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
+
+	queue.mutex.Lock() // Acquire the lock at the beginning
+	defer queue.mutex.Unlock() // Ensure the mutex is unlocked when the function exits
 
 	// If queue has items, return immediately
 	if len(queue.items) > 0 {
@@ -117,29 +118,35 @@ func (qi *QueueInstance) popWithTimeout(queueName string, timeoutMs int) interfa
 		return item
 	}
 
-	// Wait for an item with timeout
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	// If no items and timeout is 0, return nil immediately
+	if timeoutMs == 0 {
+		return nil
+	}
 
-	done := make(chan bool, 1)
-	go func() {
-		queue.cond.Wait()
-		done <- true
-	}()
+	// Use time.After to create a channel that signals after the timeout
+	timeoutCh := time.After(time.Duration(timeoutMs) * time.Millisecond)
 
-	select {
-	case <-done:
-		// Item available, check again
-		if len(queue.items) > 0 {
-			item := queue.items[0]
-			queue.items = queue.items[1:]
-			return item
+	// Loop indefinitely, waiting for an item or a timeout
+	for {
+		select {
+		case <-timeoutCh:
+			// Timeout occurred. Return nil.
+			return nil
+		default:
+			// Check if an item became available (e.g., due to a signal or spurious wakeup).
+			if len(queue.items) > 0 {
+				item := queue.items[0]
+				queue.items = queue.items[1:]
+				return item
+			}
+			// If no item is available and no timeout yet, wait on the condition variable.
+			// queue.cond.Wait() atomically unlocks the mutex, waits for a signal,
+			// and then re-locks the mutex before returning.
+			// This call must be in the same goroutine that holds the lock.
+			queue.cond.Wait()
+			// After Wait() returns, the mutex is re-locked.
+			// The loop will continue, re-evaluating the `select` and `len(queue.items)`.
 		}
-		return nil
-	case <-timer.C:
-		// Timeout reached
-		return nil
 	}
 }
 
